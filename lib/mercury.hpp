@@ -142,6 +142,7 @@
 #include <iomanip>
 #include <sstream>
 #include <iostream>
+#include <source_location>
 
  // C++20 coroutine support
 #if defined(__cpp_impl_coroutine) && __has_include(<coroutine>)
@@ -169,7 +170,10 @@ namespace Mercury {
         // EXCEPTION LOGGER
         class ExceptionLogger {
         public:
-            static void logException(const std::exception_ptr& ex_ptr) {
+            static void logException(const std::exception_ptr& ex_ptr,
+                                     std::source_location loc = 
+                                     std::source_location::current(),
+                                     const std::string& context = "") {
                 static std::mutex mtx;
                 std::lock_guard lock(mtx);
 
@@ -178,23 +182,27 @@ namespace Mercury {
 
                 std::ofstream logFile(filename, std::ios::app);
                 if (!logFile.is_open()) {
-                    std::cerr << "[Mercury::ExceptionLogger] Failed to open log file: " << filename << "\n";
+                    std::cerr << "[Mercury] Failed to open log file: " << filename << "\n";
                     return;
                 }
 
                 logFile << "=== Exception Report ===\n";
                 logFile << "Timestamp: " << timestamp << "\n";
+                logFile << "Thread ID: " << std::this_thread::get_id() << "\n";
+                if (!context.empty()) {
+                    logFile << "Context:   " << context << "\n";
+                }
+                logFile << "Location:  " << loc.file_name() << ":" << loc.line()
+                    << " in function " << loc.function_name() << "\n";
 
                 try {
                     if (ex_ptr) std::rethrow_exception(ex_ptr);
                 }
                 catch (const std::exception& e) {
-                    logFile << "Exception Type: " << typeid(e).name() << "\n";
-                    logFile << "Message: " << e.what() << "\n";
+                    logFile << "Exception: " << typeid(e).name() << ": " << e.what() << "\n";
                 }
                 catch (...) {
-                    logFile << "Exception Type: Unknown\n";
-                    logFile << "Message: Unknown exception occurred\n";
+                    logFile << "Exception: Unknown exception\n";
                 }
 
                 logFile << "========================\n\n";
@@ -220,6 +228,12 @@ namespace Mercury {
                 return ss.str();
             }
         };
+
+#define MERCURY_LOG_EXCEPTION(eptr) \
+    Mercury::ExceptionLogger::logException(eptr, std::source_location::current())
+
+#define MERCURY_LOG_EXCEPTION_CTX(eptr, msg) \
+    Mercury::ExceptionLogger::logException(eptr, std::source_location::current(), msg)
 
         // THREAD POOL
         struct PrioritizedTask {
@@ -270,7 +284,11 @@ namespace Mercury {
                                     }
                                 }
                             }
-                            if (task) task();
+                            if (task) try { task(); }
+                            catch (...) {
+                                MERCURY_LOG_EXCEPTION_CTX(std::current_exception(),
+                                    "Unhandled exception in worker thread");
+                            }
                         }
                         });
                 }
@@ -309,18 +327,18 @@ namespace Mercury {
                 -> std::future<std::invoke_result_t<Func, Args...>>
             {
                 using ReturnType = std::invoke_result_t<Func, Args...>;
-                auto task = std::make_shared<std::packaged_task<ReturnType()>>(
-                    [f = std::forward<Func>(f), ...args = std::forward<Args>(args)]() mutable {
-                        return std::invoke(f, args...);
+                    auto task = std::make_shared<std::packaged_task<ReturnType()>>(
+                        [f = std::forward<Func>(f), ...args = std::forward<Args>(args)]() mutable {
+                            return std::invoke(f, args...);
+                        }
+                    );
+                    std::future<ReturnType> result = task->get_future();
+                    {
+                        std::lock_guard lock(m_mutex);
+                        m_tasks.emplace(PrioritizedTask{ priority, [task] { (*task)(); } });
                     }
-                );
-                std::future<ReturnType> result = task->get_future();
-                {
-                    std::lock_guard lock(m_mutex);
-                    m_tasks.emplace(PrioritizedTask{ priority, [task] { (*task)(); } });
-                }
-                m_condition.notify_one();
-                return result;
+                    m_condition.notify_one();
+                    return result;
             }
 
             template<typename Func, typename... Args>
@@ -351,19 +369,20 @@ namespace Mercury {
                 -> std::future<std::invoke_result_t<Func, Args...>>
             {
                 using ReturnType = std::invoke_result_t<Func, Args...>;
-                auto task = std::make_shared<std::packaged_task<ReturnType()>>(
-                    [f = std::forward<Func>(f), ...args = std::forward<Args>(args)]() mutable {
-                        return std::invoke(f, args...);
-                    }
-                );
-                std::future<ReturnType> result = task->get_future();
+                    auto task = std::make_shared<std::packaged_task<ReturnType()>>(
+                        [f = std::forward<Func>(f), ...args = std::forward<Args>(args)]() mutable {
+                            return std::invoke(f, args...);
+                        }
+                    );
+                    std::future<ReturnType> result = task->get_future();
 
-                {
-                    std::lock_guard lock(m_mutex);
-                    m_fastQueue.push([task] { (*task)(); });
-                }
-                m_condition.notify_one();
-                return result;
+                    {
+                        std::lock_guard lock(m_mutex);
+                        m_fastQueue.push([task] { (*task)(); });
+                    }
+                    m_condition.notify_one();
+                    return result;
+
             }
 
             size_t getPendingTaskCount() const {
@@ -445,7 +464,7 @@ namespace Mercury {
              */
             std::vector<ReturnType> execute() {
                 if (m_tasks.empty()) return {};
-
+                std::exception_ptr first_exception;
                 std::vector<std::future<ReturnType>> futures;
                 futures.reserve(m_tasks.size());
 
@@ -456,14 +475,14 @@ namespace Mercury {
                         );
                     }
                     catch (const std::exception&) {
-                        ExceptionLogger::logException(std::current_exception());
+                        MERCURY_LOG_EXCEPTION(first_exception);
                         throw;
                     }
                 }
 
                 std::vector<ReturnType> results;
                 results.reserve(futures.size());
-                std::exception_ptr first_exception;
+
 
                 for (auto& f : futures) {
                     try {
@@ -472,7 +491,7 @@ namespace Mercury {
                     catch (...) {
                         if (!first_exception) {
                             first_exception = std::current_exception();
-                            ExceptionLogger::logException(first_exception);
+                            MERCURY_LOG_EXCEPTION(first_exception);
                         }
                     }
                 }
@@ -702,8 +721,17 @@ namespace Mercury {
                 }
 
                 std::thread([this, handle]() {
-                    future.wait();
-                    handle.resume();
+                    try {
+                        future.wait();
+                        handle.resume();
+                    }
+                    catch(...){
+                            Mercury::ExceptionLogger::logException(
+                            std::current_exception(),
+                            std::source_location::current(),
+                            "CoAwaitable worker"
+                        );
+                    }
                     }).detach();
             }
 
