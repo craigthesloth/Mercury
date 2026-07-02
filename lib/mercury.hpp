@@ -123,7 +123,7 @@
  * ║  License: MIT (feel free to use, modify, and distribute)                 ║
  * ║  Author:  P.Sobin                                                        ║
  * ║  Email:   craigthesloth@gmail.com                                        ║
- * ║  GitHub:  !EDIT AFTER PUSH!                                              ║
+ * ║  GitHub:  https://github.com/craigthesloth/Mercury                       ║
  * ╚══════════════════════════════════════════════════════════════════════════╝
  */
 

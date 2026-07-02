@@ -1,11 +1,10 @@
 /*
  * Mercury v1.2 Full Demo
- * Показывает:
- *   - параллельное выполнение тяжёлых CPU-задач,
- *   - использование сигналов (синхронных и асинхронных),
- *   - обработку исключений с логированием,
- *   - сравнительный бенчмарк однопоточного и многопоточного выполнения.
- *   (защита от оптимизаций через volatile sink)
+ * Shows:
+ *   - parallel execution of heavy CPU tasks,
+ *   - use of signals synchronous and asynchrpnous,
+ *   - exception handling with logging,
+ *   - a competititve benchmark of single-threaded and multi-thread execution.
  */
 
 #include <algorithm>
@@ -26,10 +25,10 @@
 
 
 
- // ---------- Защита от агрессивных оптимизаций ----------
+ // ---------- Protection against aggressive optimizations ----------
 volatile double g_sink = 0.0;
 
-// ---------- Генераторы случайных чисел ----------
+// ---------- Random Number Generators ----------
 double getRandDouble(double low, double high) {
     static thread_local std::mt19937_64 mt(std::random_device{}());
     std::uniform_real_distribution<double> dis(low, high);
@@ -42,7 +41,7 @@ int getRandInt(int low, int high) {
     return dis(mt);
 }
 
-// ---------- Тяжёлая CPU-нагрузка ----------
+// ---------- Heavy CPU load ----------
 double heavyCPUWork(size_t iterations) {
     double result = 0.0;
     for (size_t i = 0; i < iterations; ++i) {
@@ -51,7 +50,7 @@ double heavyCPUWork(size_t iterations) {
     return result;
 }
 
-// ---------- Однопоточная обработка набора задач ----------
+// ---------- Single-threaded processing of a set of tasks ----------
 double singleThreadHeavy(size_t tasksCount, size_t iterationsPerTask) {
     double sum = 0.0;
     for (size_t i = 0; i < tasksCount; ++i) {
@@ -60,7 +59,7 @@ double singleThreadHeavy(size_t tasksCount, size_t iterationsPerTask) {
     return sum;
 }
 
-// ---------- Многопоточная обработка через Mercury (с чанками) ----------
+// ---------- Multi-threaded processing via Mercury (with chunks) ----------
 double multiThreadHeavy(Mercury::TaskController<double>& controller,
     size_t tasksCount,
     size_t iterationsPerTask,
@@ -88,7 +87,7 @@ double multiThreadHeavy(Mercury::TaskController<double>& controller,
     return std::accumulate(results.begin(), results.end(), 0.0);
 }
 
-// ---------- Демонстрация сигналов ----------
+// ---------- Signal demonstration ----------
 void demonstrateSignals() {
     std::cout << "\n=== Signal Demo ===\n";
 
@@ -110,7 +109,7 @@ void demonstrateSignals() {
     std::cout << "Signal demo finished.\n";
 }
 
-// ---------- Демонстрация исключений с логированием ----------
+// ---------- Demonstration of exceptions with logging ----------
 void demonstrateExceptions() {
     std::cout << "\n=== Exception Demo ===\n";
 
@@ -240,7 +239,7 @@ void runBenchmark() {
     }
 }
 
-// ---------- Главный вход ----------
+// ---------- Enter point ----------
 int main() {
     try {
         demonstrateSignals();
