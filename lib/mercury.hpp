@@ -674,14 +674,22 @@ namespace Mercury {
             }
 
             void await_suspend(std::coroutine_handle<> handle) noexcept {
-                if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
-                    return;
-                }
+                if (!pool) { std::terminate(); }
 
-                std::thread([this, handle]() {
-                    future.wait();
-                    handle.resume();
-                    }).detach();
+                auto shared = std::make_shared<std::shared_future<ReturnType>>(future.share());
+                pool->enqueue(Priority::Urgent, [shared, handle]() mutable {
+                    try {
+                        shared->wait();
+                        handle.resume();
+                    }
+                    catch (...) {
+                            ExceptionLogger::logException(
+                            std::current_exception(),
+                            std::source_location::current(),
+                            "CoAwaitable worker"
+                        );
+                    }
+                    });
             }
 
             ReturnType await_resume() {
@@ -716,23 +724,22 @@ namespace Mercury {
             }
 
             void await_suspend(std::coroutine_handle<> handle) noexcept {
-                if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
-                    return;
-                }
+                if (!pool) { std::terminate(); }
 
-                std::thread([this, handle]() {
+                auto shared = std::make_shared<std::shared_future<void>>(future.share());
+                pool->enqueue(Mercury::Priority::Urgent, [shared, handle]() mutable {
                     try {
-                        future.wait();
+                        shared->wait();
                         handle.resume();
                     }
-                    catch(...){
-                            Mercury::ExceptionLogger::logException(
+                    catch (...) {
+                        Mercury::ExceptionLogger::logException(
                             std::current_exception(),
                             std::source_location::current(),
                             "CoAwaitable worker"
                         );
                     }
-                    }).detach();
+                    });
             }
 
 
