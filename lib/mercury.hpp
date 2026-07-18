@@ -479,26 +479,28 @@ namespace Mercury {
              */
             std::vector<ReturnType> execute() {
                 if (m_tasks.empty()) return {};
-                std::exception_ptr first_exception;
                 std::vector<std::future<ReturnType>> futures;
                 futures.reserve(m_tasks.size());
+                std::exception_ptr first_exception;
 
                 for (auto& task : m_tasks) {
                     try {
-                        futures.emplace_back(
-                            m_threadPool->enqueue(task.getPriority(), std::move(task).getFunction())
-                        );
+                        uint8_t prio = task.getPriority();
+                        auto func = std::move(task).getFunction();
+                        futures.emplace_back(m_threadPool->enqueue(prio, std::move(func)));
                     }
-                    catch (const std::exception&) {
-                        MERCURY_LOG_EXCEPTION(first_exception);
-                        throw;
+                    catch (...) {
+                        if (!first_exception) {
+                            first_exception = std::current_exception();
+                            MERCURY_LOG_EXCEPTION(first_exception);
+                        }
+                        std::promise<ReturnType> empty;
+                        futures.emplace_back(empty.get_future());
                     }
                 }
 
                 std::vector<ReturnType> results;
                 results.reserve(futures.size());
-
-
                 for (auto& f : futures) {
                     try {
                         results.push_back(f.get());
@@ -508,6 +510,7 @@ namespace Mercury {
                             first_exception = std::current_exception();
                             MERCURY_LOG_EXCEPTION(first_exception);
                         }
+                        results.push_back(ReturnType{});
                     }
                 }
 
