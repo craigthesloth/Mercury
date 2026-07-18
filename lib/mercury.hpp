@@ -8,8 +8,8 @@
  * A modern C++20 header-only library for parallel and asynchronous programming,
  * providing three integrated layers:
  *
- *   1.  ThreadPool – a work-stealing, priority-aware thread pool with a fast
- *       channel for urgent tasks and built-in monitoring.
+ *   1.  ThreadPool – a priority-aware thread pool with a shared priority queue
+ *       and a fast channel for urgent tasks.
  *
  *   2.  Signal / Slot – a type-safe, priority-ordered observer pattern that can
  *       deliver events synchronously or asynchronously via the thread pool.
@@ -17,6 +17,21 @@
  *   3.  Coroutine Support – C++20 coroutine primitives (CoAwaitable, Task<R>)
  *       that allow writing asynchronous code that suspends and resumes on the
  *       Mercury thread pool.
+ * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ *  DESIGN NOTES
+ * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ *  The thread pool uses a single, shared priority queue (not work-stealing).
+ *  This keeps the implementation simple, deterministic, and avoids the
+ *  complexity of per-thread queues.  It is ideal for workloads where the
+ *  number of tasks is large but each task does non‑trivial work, because
+ *  contention on the queue is low.  If you need locality‑aware scheduling
+ *  or NUMA optimisations, work‑stealing may be added as an optional mode
+ *  in a future release.
+ *
+ *  Graceful shutdown: the destructor waits for all running tasks to finish.
+ *  Tasks that never return (infinite loop, blocking I/O without timeout)
+ *  will cause the program to hang.  Ensure your tasks are finite or use
+ *  cooperative cancellation (e.g., atomic flag).
  *
  * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  *  FEATURES
