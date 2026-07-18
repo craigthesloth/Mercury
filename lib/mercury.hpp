@@ -186,23 +186,28 @@ namespace Mercury {
         class ExceptionLogger {
         public:
             static void logException(const std::exception_ptr& ex_ptr,
-                                     std::source_location loc = 
-                                     std::source_location::current(),
-                                     const std::string& context = "") {
+                std::source_location loc = std::source_location::current(),
+                const std::string& context = "") {
+#ifdef MERCURY_DISABLE_LOGGING
+                return;
+#else
+                static std::ofstream logFile = []() -> std::ofstream {
+                    auto timestamp = getCurrentTimestamp();
+                    std::string filename = "error_" + timestamp + ".log";
+                    std::ofstream file(filename, std::ios::app);
+                    if (!file.is_open()) {
+                        std::cerr << "[Mercury] Failed to open log file: " << filename << "\n";
+                    }
+                    return file;
+                    }();
+
                 static std::mutex mtx;
                 std::lock_guard lock(mtx);
 
-                auto timestamp = getCurrentTimestamp();
-                std::string filename = "error_" + timestamp + ".log";
-
-                std::ofstream logFile(filename, std::ios::app);
-                if (!logFile.is_open()) {
-                    std::cerr << "[Mercury] Failed to open log file: " << filename << "\n";
-                    return;
-                }
+                if (!logFile.is_open()) return;
 
                 logFile << "=== Exception Report ===\n";
-                logFile << "Timestamp: " << timestamp << "\n";
+                logFile << "Timestamp: " << getCurrentTimestamp() << "\n";
                 logFile << "Thread ID: " << std::this_thread::get_id() << "\n";
                 if (!context.empty()) {
                     logFile << "Context:   " << context << "\n";
@@ -222,6 +227,16 @@ namespace Mercury {
 
                 logFile << "========================\n\n";
                 logFile.flush();
+#endif
+            }
+
+            static void closeLog() {
+#ifdef MERCURY_DISABLE_LOGGING
+                return;
+#else
+                static std::mutex mtx;
+                std::lock_guard lock(mtx);
+#endif
             }
 
         private:
