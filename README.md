@@ -1,4 +1,4 @@
-# Mercury v1.2 – Multithreaded Task Scheduler & Async Toolkit
+# Mercury v1.3 – Multithreaded Task Scheduler & Async Toolkit
 
 A modern C++20 header-only library for parallel and asynchronous programming,
 providing three integrated layers:

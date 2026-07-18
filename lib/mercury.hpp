@@ -1,7 +1,7 @@
 #pragma once
 /**
  * ╔══════════════════════════════════════════════════════════════════════════╗
- * ║                          Mercury v1.2                                    ║
+ * ║                          Mercury v1.3                                    ║
  * ║              Multithreaded Task Scheduler & Async Toolkit                ║
  * ╚══════════════════════════════════════════════════════════════════════════╝
  *
@@ -788,6 +788,7 @@ namespace Mercury {
                 void unhandled_exception() { exception = std::current_exception(); }
                 ReturnType result{};
                 std::exception_ptr exception;
+                std::atomic_flag resumed = ATOMIC_FLAG_INIT;
             };
 
             using handle_type = std::coroutine_handle<promise_type>;
@@ -804,30 +805,19 @@ namespace Mercury {
             }
 
             ReturnType get() {
-                std::lock_guard<std::mutex> lock(m_mutex);
-                if (!handle.done()) handle.resume();
-                if (handle.promise().exception) std::rethrow_exception(handle.promise().exception);
-                return handle.promise().result;
-            }
-
-            bool await_ready() noexcept { return false; }
-            void await_suspend(std::coroutine_handle<> caller) {
-                handle.resume();
-            }
-
-            ReturnType await_resume() {
-                {
-                    std::lock_guard lock(m_mutex);
-                    if (handle.promise().exception)
-                        std::rethrow_exception(handle.promise().exception);
+                if (!handle.promise().resumed.test_and_set()) {
+                    if (!handle.done()) {
+                        handle.resume();
+                    }
+                }
+                if (handle.promise().exception) {
+                    std::rethrow_exception(handle.promise().exception);
                 }
                 return handle.promise().result;
             }
 
             handle_type handle{};
 
-        private:
-            mutable std::mutex m_mutex;
         };
 
         template<>
@@ -841,6 +831,7 @@ namespace Mercury {
                 void return_void() {}
                 void unhandled_exception() { exception = std::current_exception(); }
                 std::exception_ptr exception;
+                std::atomic_flag resumed = ATOMIC_FLAG_INIT;
             };
 
             using handle_type = std::coroutine_handle<promise_type>;
@@ -857,28 +848,17 @@ namespace Mercury {
             }
 
             void get() {
-                std::lock_guard lock(m_mutex);
-                if (!handle.done()) handle.resume();
-                if (handle.promise().exception) std::rethrow_exception(handle.promise().exception);
-            }
-
-            bool await_ready() noexcept { return false; }
-            void await_suspend(std::coroutine_handle<> caller) {
-                handle.resume();
-            }
-            void await_resume() {
-                {
-                    std::lock_guard lock(m_mutex);
-                    if (handle.promise().exception)
-                        std::rethrow_exception(handle.promise().exception);
+                if (!handle.promise().resumed.test_and_set()) {
+                    if (!handle.done()) {
+                        handle.resume();
+                    }
+                }
+                if (handle.promise().exception) {
+                    std::rethrow_exception(handle.promise().exception);
                 }
             }
 
             handle_type handle{};
-
-
-        private:
-            mutable std::mutex m_mutex;
         };
 #endif // COROUTINE SUPPORT (C++20)
     } // namespace v1
