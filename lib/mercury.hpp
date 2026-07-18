@@ -551,6 +551,8 @@ namespace Mercury {
         };
 
         // SIGNAL with per-slot priority (sync/async)
+        // In asynchronous mode, arguments are copied into a shared_ptr for safety.
+        // For large objects, consider passing pointers or std::ref instead.
         template<typename... Args>
         class Signal {
         public:
@@ -573,7 +575,12 @@ namespace Mercury {
             Signal(ThreadPool& pool, Priority priority)
                 : Signal(pool, static_cast<uint8_t>(priority)) {
             }
-
+            Signal(size_t cleanupInterval, ThreadPool& pool, uint8_t defaultPriority = static_cast<uint8_t>(Priority::Normal))
+                : m_pool(pool), m_defaultPriority(defaultPriority), m_cleanupInterval(cleanupInterval) {
+            }
+            Signal(size_t cleanupInterval, ThreadPool& pool, Priority priority)
+                : Signal(cleanupInterval, pool, static_cast<uint8_t>(priority)) {
+            }
 
             struct Connection {
                 explicit Connection(Signal* sig) : signal(sig) {}
@@ -654,6 +661,11 @@ namespace Mercury {
                         slot(args...);
                     }
                 }
+
+                if(++m_emitCount % m_cleanupInterval == 0)
+                {
+                    cleanup();
+                }
             }
 
 
@@ -677,6 +689,8 @@ namespace Mercury {
             uint8_t m_defaultPriority = static_cast<uint8_t>(Priority::Normal);
             mutable std::mutex m_mutex;
             mutable std::vector<std::tuple<uint8_t, SlotType, std::weak_ptr<Connection>>> m_slots;
+            mutable std::atomic<size_t> m_emitCount{ 0 };
+            size_t m_cleanupInterval = 245;
         };
 
 
