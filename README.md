@@ -23,10 +23,13 @@ Design your tasks to complete, or use cooperative cancellation (e.g., an atomic 
 
 - Priority-based task execution (0-255, lower = higher priority).
 - Fast queue for urgent tasks, bypassing the priority queue.
-- Exception logging to timestamped files with automatic rethrow.
+- Exception logging to a single file (lazy‑opened) with timestamp, thread ID,
+  and source location.
 - Full move semantics and perfect forwarding.
-- Thread-safe signal/slot with per-slot priority.
-- C++20 coroutines: `co_await std::future<>` on the pool, `Task<R>` return type.
+- Thread-safe signal/slot with per‑slot priority and automatic cleanup of
+  expired connections.
+- C++20 coroutines: `co_await std::future<>` on the pool, `Task<R>` return type
+  (co_await Task is temporarily disabled – use `get()` or `co_await awaitable`).
 - Header-only – single `#include`, zero dependencies beyond the C++ standard library.
 
 ## Quick Start

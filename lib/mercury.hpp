@@ -33,12 +33,17 @@
  *  will cause the program to hang.  Ensure your tasks are finite or use
  *  cooperative cancellation (e.g., atomic flag).
  *
+ *  Coroutine resumption: CoAwaitable now schedules the continuation on the
+ *  same ThreadPool instead of spawning a detached thread. This eliminates
+ *  thread leaks and ensures predictable resource usage.
+ * 
  * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  *  FEATURES
  * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  *  - Priority-based task execution (0-255, lower = higher priority).
  *  - Fast queue for urgent tasks, bypassing the priority queue.
- *  - Exception logging to timestamped files with automatic rethrow.
+ *  - Exception logging to a single file (lazy‑opened) with timestamp, thread ID,
+ *    and source location.
  *  - Full move semantics and perfect forwarding.
  *  - Thread-safe signal/slot with per-slot priority.
  *  - C++20 coroutines: co_await std::future<> on the pool, Task<R> return type.
