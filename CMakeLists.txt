@@ -12,7 +12,6 @@ add_executable(MercuryDemo
 
 target_include_directories(MercuryDemo PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/lib
-    ${CMAKE_CURRENT_SOURCE_DIR}/tests
 )
 
 option(MERCURY_BUILD_TESTS "Build tests for Mercury" ON)
