@@ -21,7 +21,7 @@
 #include <thread>
 #include <vector>
 
-#include "Mercury.hpp"
+#include "mercury.hpp"
 
 
 
