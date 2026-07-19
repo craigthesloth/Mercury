@@ -82,15 +82,20 @@ TEST_CASE("Stress: mixed CPU-bound and fast tasks", "[stress]") {
             });
     }
 
-    // priritized small tasks
+    // prioritized small tasks
     for (int i = 0; i < fastTasks; ++i) {
         pool.enqueue(Mercury::Priority::Urgent, [&counter]() {
             counter.fetch_add(1, std::memory_order_relaxed);
             });
     }
 
-    while (pool.getPendingTaskCount() > 0) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    // waiting for all tasks to end up
+    auto start = std::chrono::steady_clock::now();
+    while (counter.load() < cpuTasks + fastTasks) {
+        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(5)) {
+            FAIL("Timeout waiting for mixed tasks to complete");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     REQUIRE(counter.load() == cpuTasks + fastTasks);

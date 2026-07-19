@@ -1,15 +1,15 @@
 #pragma once
 /**
  * ╔══════════════════════════════════════════════════════════════════════════╗
- * ║                          Mercury v1.2                                    ║
+ * ║                          Mercury v1.3                                    ║
  * ║              Multithreaded Task Scheduler & Async Toolkit                ║
  * ╚══════════════════════════════════════════════════════════════════════════╝
  *
  * A modern C++20 header-only library for parallel and asynchronous programming,
  * providing three integrated layers:
  *
- *   1.  ThreadPool – a work-stealing, priority-aware thread pool with a fast
- *       channel for urgent tasks and built-in monitoring.
+ *   1.  ThreadPool – a priority-aware thread pool with a shared priority queue
+ *       and a fast channel for urgent tasks.
  *
  *   2.  Signal / Slot – a type-safe, priority-ordered observer pattern that can
  *       deliver events synchronously or asynchronously via the thread pool.
@@ -17,13 +17,33 @@
  *   3.  Coroutine Support – C++20 coroutine primitives (CoAwaitable, Task<R>)
  *       that allow writing asynchronous code that suspends and resumes on the
  *       Mercury thread pool.
+ * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ *  DESIGN NOTES
+ * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ *  The thread pool uses a single, shared priority queue (not work-stealing).
+ *  This keeps the implementation simple, deterministic, and avoids the
+ *  complexity of per-thread queues.  It is ideal for workloads where the
+ *  number of tasks is large but each task does non‑trivial work, because
+ *  contention on the queue is low.  If you need locality‑aware scheduling
+ *  or NUMA optimisations, work‑stealing may be added as an optional mode
+ *  in a future release.
  *
+ *  Graceful shutdown: the destructor waits for all running tasks to finish.
+ *  Tasks that never return (infinite loop, blocking I/O without timeout)
+ *  will cause the program to hang.  Ensure your tasks are finite or use
+ *  cooperative cancellation (e.g., atomic flag).
+ *
+ *  Coroutine resumption: CoAwaitable now schedules the continuation on the
+ *  same ThreadPool instead of spawning a detached thread. This eliminates
+ *  thread leaks and ensures predictable resource usage.
+ * 
  * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  *  FEATURES
  * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  *  - Priority-based task execution (0-255, lower = higher priority).
  *  - Fast queue for urgent tasks, bypassing the priority queue.
- *  - Exception logging to timestamped files with automatic rethrow.
+ *  - Exception logging to a single file (lazy‑opened) with timestamp, thread ID,
+ *    and source location.
  *  - Full move semantics and perfect forwarding.
  *  - Thread-safe signal/slot with per-slot priority.
  *  - C++20 coroutines: co_await std::future<> on the pool, Task<R> return type.
@@ -171,23 +191,28 @@ namespace Mercury {
         class ExceptionLogger {
         public:
             static void logException(const std::exception_ptr& ex_ptr,
-                                     std::source_location loc = 
-                                     std::source_location::current(),
-                                     const std::string& context = "") {
+                std::source_location loc = std::source_location::current(),
+                const std::string& context = "") {
+#ifdef MERCURY_DISABLE_LOGGING
+                return;
+#else
+                static std::ofstream logFile = []() -> std::ofstream {
+                    auto timestamp = getCurrentTimestamp();
+                    std::string filename = "error_" + timestamp + ".log";
+                    std::ofstream file(filename, std::ios::app);
+                    if (!file.is_open()) {
+                        std::cerr << "[Mercury] Failed to open log file: " << filename << "\n";
+                    }
+                    return file;
+                    }();
+
                 static std::mutex mtx;
                 std::lock_guard lock(mtx);
 
-                auto timestamp = getCurrentTimestamp();
-                std::string filename = "error_" + timestamp + ".log";
-
-                std::ofstream logFile(filename, std::ios::app);
-                if (!logFile.is_open()) {
-                    std::cerr << "[Mercury] Failed to open log file: " << filename << "\n";
-                    return;
-                }
+                if (!logFile.is_open()) return;
 
                 logFile << "=== Exception Report ===\n";
-                logFile << "Timestamp: " << timestamp << "\n";
+                logFile << "Timestamp: " << getCurrentTimestamp() << "\n";
                 logFile << "Thread ID: " << std::this_thread::get_id() << "\n";
                 if (!context.empty()) {
                     logFile << "Context:   " << context << "\n";
@@ -207,6 +232,16 @@ namespace Mercury {
 
                 logFile << "========================\n\n";
                 logFile.flush();
+#endif
+            }
+
+            static void closeLog() {
+#ifdef MERCURY_DISABLE_LOGGING
+                return;
+#else
+                static std::mutex mtx;
+                std::lock_guard lock(mtx);
+#endif
             }
 
         private:
@@ -464,26 +499,28 @@ namespace Mercury {
              */
             std::vector<ReturnType> execute() {
                 if (m_tasks.empty()) return {};
-                std::exception_ptr first_exception;
                 std::vector<std::future<ReturnType>> futures;
                 futures.reserve(m_tasks.size());
+                std::exception_ptr first_exception;
 
                 for (auto& task : m_tasks) {
                     try {
-                        futures.emplace_back(
-                            m_threadPool->enqueue(task.getPriority(), std::move(task).getFunction())
-                        );
+                        uint8_t prio = task.getPriority();
+                        auto func = std::move(task).getFunction();
+                        futures.emplace_back(m_threadPool->enqueue(prio, std::move(func)));
                     }
-                    catch (const std::exception&) {
-                        MERCURY_LOG_EXCEPTION(first_exception);
-                        throw;
+                    catch (...) {
+                        if (!first_exception) {
+                            first_exception = std::current_exception();
+                            MERCURY_LOG_EXCEPTION(first_exception);
+                        }
+                        std::promise<ReturnType> empty;
+                        futures.emplace_back(empty.get_future());
                     }
                 }
 
                 std::vector<ReturnType> results;
                 results.reserve(futures.size());
-
-
                 for (auto& f : futures) {
                     try {
                         results.push_back(f.get());
@@ -493,6 +530,7 @@ namespace Mercury {
                             first_exception = std::current_exception();
                             MERCURY_LOG_EXCEPTION(first_exception);
                         }
+                        results.push_back(ReturnType{});
                     }
                 }
 
@@ -533,6 +571,8 @@ namespace Mercury {
         };
 
         // SIGNAL with per-slot priority (sync/async)
+        // In asynchronous mode, arguments are copied into a shared_ptr for safety.
+        // For large objects, consider passing pointers or std::ref instead.
         template<typename... Args>
         class Signal {
         public:
@@ -555,7 +595,12 @@ namespace Mercury {
             Signal(ThreadPool& pool, Priority priority)
                 : Signal(pool, static_cast<uint8_t>(priority)) {
             }
-
+            Signal(size_t cleanupInterval, ThreadPool& pool, uint8_t defaultPriority = static_cast<uint8_t>(Priority::Normal))
+                : m_pool(pool), m_defaultPriority(defaultPriority), m_cleanupInterval(cleanupInterval) {
+            }
+            Signal(size_t cleanupInterval, ThreadPool& pool, Priority priority)
+                : Signal(cleanupInterval, pool, static_cast<uint8_t>(priority)) {
+            }
 
             struct Connection {
                 explicit Connection(Signal* sig) : signal(sig) {}
@@ -623,8 +668,9 @@ namespace Mercury {
                     for (auto& [prio, slot, weak_conn] : active) {
                         auto conn = weak_conn.lock();
                         if (!conn || conn->isDisconnected()) continue;
-                        m_pool->get().enqueue(prio, [slot, shared_args] {
-                            std::apply(slot, *shared_args);
+                        SlotType slot_copy = slot;
+                        m_pool->get().enqueue(prio, [slot_copy, shared_args] {
+                            std::apply(slot_copy, *shared_args);
                             });
                     }
                 }
@@ -636,10 +682,15 @@ namespace Mercury {
                         slot(args...);
                     }
                 }
+
+                if(++m_emitCount % m_cleanupInterval == 0)
+                {
+                    cleanup();
+                }
             }
 
 
-            void cleanup() {
+            void cleanup() const {
                 std::lock_guard lock(m_mutex);
                 std::erase_if(m_slots, [](const auto& t) {
                     return std::get<2>(t).expired();
@@ -659,6 +710,8 @@ namespace Mercury {
             uint8_t m_defaultPriority = static_cast<uint8_t>(Priority::Normal);
             mutable std::mutex m_mutex;
             mutable std::vector<std::tuple<uint8_t, SlotType, std::weak_ptr<Connection>>> m_slots;
+            mutable std::atomic<size_t> m_emitCount{ 0 };
+            size_t m_cleanupInterval = 245;
         };
 
 
@@ -666,26 +719,38 @@ namespace Mercury {
         // COROUTINE SUPPORT (C++20)
         template<typename ReturnType>
         struct CoWaitable {
-            std::future<ReturnType> future;
+            std::shared_future<ReturnType> shared_future;
             ThreadPool* pool{ nullptr };
 
+            explicit CoWaitable(std::future<ReturnType>&& fut, ThreadPool* p)
+                : shared_future(fut.share()), pool(p) {
+            }
+
             bool await_ready() const noexcept {
-                return future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+                return shared_future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
             }
 
             void await_suspend(std::coroutine_handle<> handle) noexcept {
-                if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
-                    return;
-                }
+                if (!pool) { std::terminate(); }
 
-                std::thread([this, handle]() {
-                    future.wait();
-                    handle.resume();
-                    }).detach();
+                auto local_shared = shared_future;
+                pool->enqueue(Mercury::Priority::Urgent, [local_shared, handle]() mutable {
+                    try {
+                        local_shared.wait();
+                        handle.resume();
+                    }
+                    catch (...) {
+                        Mercury::ExceptionLogger::logException(
+                            std::current_exception(),
+                            std::source_location::current(),
+                            "CoAwaitable worker"
+                        );
+                    }
+                    });
             }
 
             ReturnType await_resume() {
-                return future.get();
+                return shared_future.get();
             }
         };
 
@@ -708,35 +773,39 @@ namespace Mercury {
 
         template<>
         struct CoWaitable<void> {
-            std::future<void> future;
+            std::shared_future<void> shared_future;
             ThreadPool* pool{ nullptr };
 
+            explicit CoWaitable(std::future<void>&& fut, ThreadPool* p)
+                : shared_future(fut.share()), pool(p) {
+            }
+
             bool await_ready() const noexcept {
-                return future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+                return shared_future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
             }
 
             void await_suspend(std::coroutine_handle<> handle) noexcept {
-                if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
-                    return;
-                }
+                if (!pool) { std::terminate(); }
 
-                std::thread([this, handle]() {
+                auto local_shared = shared_future;
+                pool->enqueue(Mercury::Priority::Urgent, [local_shared, handle]() mutable {
                     try {
-                        future.wait();
+                        local_shared.wait();  // ← через .
                         handle.resume();
                     }
-                    catch(...){
-                            Mercury::ExceptionLogger::logException(
+                    catch (...) {
+                        Mercury::ExceptionLogger::logException(
                             std::current_exception(),
                             std::source_location::current(),
-                            "CoAwaitable worker"
+                            "CoAwaitable<void> worker"
                         );
                     }
-                    }).detach();
+                    });
             }
 
-
-            void await_resume() { future.get(); }
+            void await_resume() {
+                shared_future.get();
+            }
         };
 
         inline CoWaitable<void> awaitable(std::future<void>&& future, ThreadPool& pool) {
@@ -763,6 +832,7 @@ namespace Mercury {
                 void unhandled_exception() { exception = std::current_exception(); }
                 ReturnType result{};
                 std::exception_ptr exception;
+                std::atomic_flag resumed = ATOMIC_FLAG_INIT;
             };
 
             using handle_type = std::coroutine_handle<promise_type>;
@@ -779,30 +849,19 @@ namespace Mercury {
             }
 
             ReturnType get() {
-                std::lock_guard<std::mutex> lock(m_mutex);
-                if (!handle.done()) handle.resume();
-                if (handle.promise().exception) std::rethrow_exception(handle.promise().exception);
-                return handle.promise().result;
-            }
-
-            bool await_ready() noexcept { return false; }
-            void await_suspend(std::coroutine_handle<> caller) {
-                handle.resume();
-            }
-
-            ReturnType await_resume() {
-                {
-                    std::lock_guard lock(m_mutex);
-                    if (handle.promise().exception)
-                        std::rethrow_exception(handle.promise().exception);
+                if (!handle.promise().resumed.test_and_set()) {
+                    if (!handle.done()) {
+                        handle.resume();
+                    }
+                }
+                if (handle.promise().exception) {
+                    std::rethrow_exception(handle.promise().exception);
                 }
                 return handle.promise().result;
             }
 
             handle_type handle{};
 
-        private:
-            mutable std::mutex m_mutex;
         };
 
         template<>
@@ -816,6 +875,7 @@ namespace Mercury {
                 void return_void() {}
                 void unhandled_exception() { exception = std::current_exception(); }
                 std::exception_ptr exception;
+                std::atomic_flag resumed = ATOMIC_FLAG_INIT;
             };
 
             using handle_type = std::coroutine_handle<promise_type>;
@@ -832,28 +892,17 @@ namespace Mercury {
             }
 
             void get() {
-                std::lock_guard lock(m_mutex);
-                if (!handle.done()) handle.resume();
-                if (handle.promise().exception) std::rethrow_exception(handle.promise().exception);
-            }
-
-            bool await_ready() noexcept { return false; }
-            void await_suspend(std::coroutine_handle<> caller) {
-                handle.resume();
-            }
-            void await_resume() {
-                {
-                    std::lock_guard lock(m_mutex);
-                    if (handle.promise().exception)
-                        std::rethrow_exception(handle.promise().exception);
+                if (!handle.promise().resumed.test_and_set()) {
+                    if (!handle.done()) {
+                        handle.resume();
+                    }
+                }
+                if (handle.promise().exception) {
+                    std::rethrow_exception(handle.promise().exception);
                 }
             }
 
             handle_type handle{};
-
-
-        private:
-            mutable std::mutex m_mutex;
         };
 #endif // COROUTINE SUPPORT (C++20)
     } // namespace v1

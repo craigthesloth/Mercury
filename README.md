@@ -1,4 +1,4 @@
-# Mercury v1.2 – Multithreaded Task Scheduler & Async Toolkit
+# Mercury v1.3 – Multithreaded Task Scheduler & Async Toolkit
 
 A modern C++20 header-only library for parallel and asynchronous programming,
 providing three integrated layers:
@@ -7,14 +7,29 @@ providing three integrated layers:
 2. **Signal / Slot** – a type-safe, priority-ordered observer pattern that can deliver events synchronously or asynchronously via the thread pool.
 3. **Coroutine Support** – C++20 coroutine primitives (`CoAwaitable`, `Task<R>`) that allow writing asynchronous code that suspends and resumes on the Mercury thread pool.
 
+## Design Decisions
+
+### Shared queue instead of work-stealing
+Mercury uses a single priority queue shared by all worker threads. This keeps the implementation simple, deterministic, and avoids the overhead of per‑thread queues. 
+It is well suited for workloads with many tasks that each do non‑trivial work, because contention on the queue is low. 
+Work‑stealing (which improves locality and NUMA scaling) may be added as an optional mode in a future release.
+
+### Graceful shutdown
+The `ThreadPool` destructor waits for all running tasks to finish. 
+If a task never returns (infinite loop, blocking I/O without timeout), the program will hang during shutdown.
+Design your tasks to complete, or use cooperative cancellation (e.g., an atomic flag) to exit long‑running operations.
+
 ## Features
 
 - Priority-based task execution (0-255, lower = higher priority).
 - Fast queue for urgent tasks, bypassing the priority queue.
-- Exception logging to timestamped files with automatic rethrow.
+- Exception logging to a single file (lazy‑opened) with timestamp, thread ID,
+  and source location.
 - Full move semantics and perfect forwarding.
-- Thread-safe signal/slot with per-slot priority.
-- C++20 coroutines: `co_await std::future<>` on the pool, `Task<R>` return type.
+- Thread-safe signal/slot with per‑slot priority and automatic cleanup of
+  expired connections.
+- C++20 coroutines: `co_await std::future<>` on the pool, `Task<R>` return type
+  (co_await Task is temporarily disabled – use `get()` or `co_await awaitable`).
 - Header-only – single `#include`, zero dependencies beyond the C++ standard library.
 
 ## Quick Start

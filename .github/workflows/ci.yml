@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }} / ${{ matrix.compiler }} / ${{ matrix.sanitizer }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+        compiler: [gcc, clang, msvc]
+        sanitizer: [OFF, address, thread]
+        exclude:
+          # unsupported
+          - os: ubuntu-22.04
+            compiler: msvc
+          - os: windows-2022
+            compiler: gcc
+          - compiler: msvc
+            sanitizer: thread   # if MSVC with no TSan
+          - compiler: gcc
+            sanitizer: thread   # no dublication for gcc
+          - compiler: clang
+            sanitizer: address  # no dublication for clang
+        include:
+          # Windows + MSVC + ASan
+          - os: windows-2022
+            compiler: msvc
+            sanitizer: address
+            cmake_flags: "-DCMAKE_C_FLAGS=/fsanitize=address -DCMAKE_CXX_FLAGS=/fsanitize=address"
+          # Windows + Clang + TSan
+          - os: windows-2022
+            compiler: clang
+            sanitizer: thread
+            cmake_flags: "-DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_FLAGS=-fsanitize=thread -DCMAKE_CXX_FLAGS=-fsanitize=thread"
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup CMake
+      uses: lukka/get-cmake@latest
+
+    - name: Install Clang (Windows) if needed
+      if: runner.os == 'Windows' && matrix.compiler == 'clang'
+      run: choco install llvm -y
+
+    - name: Install GCC 12 (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y g++-12
+        echo "CC=gcc-12" >> $GITHUB_ENV
+        echo "CXX=g++-12" >> $GITHUB_ENV
+
+    - name: Configure CMake (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        SANITIZER_FLAGS=""
+        if [ "${{ matrix.sanitizer }}" == "address" ]; then
+          SANITIZER_FLAGS="-fsanitize=address"
+        elif [ "${{ matrix.sanitizer }}" == "thread" ]; then
+          SANITIZER_FLAGS="-fsanitize=thread"
+        fi
+        cmake -B build -DMERCURY_BUILD_TESTS=ON \
+              -DCMAKE_CXX_FLAGS="$SANITIZER_FLAGS" \
+              -DCMAKE_BUILD_TYPE=Debug \
+              -DCMAKE_C_COMPILER=$CC \
+              -DCMAKE_CXX_COMPILER=$CXX
+
+    - name: Configure CMake (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        $flags = "${{ matrix.cmake_flags }}"
+        cmake -B build -DMERCURY_BUILD_TESTS=ON `
+              -DCMAKE_BUILD_TYPE=Debug `
+              $flags
+
+    - name: Build
+      run: cmake --build build --config Debug
+
+    - name: Run tests
+      working-directory: build
+      run: ctest -C Debug --output-on-failure
