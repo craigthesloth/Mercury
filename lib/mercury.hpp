@@ -689,7 +689,7 @@ namespace Mercury {
             }
 
 
-            void cleanup() {
+            void cleanup() const {
                 std::lock_guard lock(m_mutex);
                 std::erase_if(m_slots, [](const auto& t) {
                     return std::get<2>(t).expired();
@@ -718,24 +718,28 @@ namespace Mercury {
         // COROUTINE SUPPORT (C++20)
         template<typename ReturnType>
         struct CoWaitable {
-            std::future<ReturnType> future;
+            std::shared_future<ReturnType> shared_future;
             ThreadPool* pool{ nullptr };
 
+            explicit CoWaitable(std::future<ReturnType>&& fut, ThreadPool* p)
+                : shared_future(fut.share()), pool(p) {
+            }
+
             bool await_ready() const noexcept {
-                return future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+                return shared_future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
             }
 
             void await_suspend(std::coroutine_handle<> handle) noexcept {
                 if (!pool) { std::terminate(); }
 
-                auto shared = std::make_shared<std::shared_future<ReturnType>>(future.share());
-                pool->enqueue(Priority::Urgent, [shared, handle]() mutable {
+                auto local_shared = shared_future;
+                pool->enqueue(Mercury::Priority::Urgent, [local_shared, handle]() mutable {
                     try {
-                        shared->wait();
+                        local_shared.wait();
                         handle.resume();
                     }
                     catch (...) {
-                            ExceptionLogger::logException(
+                        Mercury::ExceptionLogger::logException(
                             std::current_exception(),
                             std::source_location::current(),
                             "CoAwaitable worker"
@@ -745,7 +749,7 @@ namespace Mercury {
             }
 
             ReturnType await_resume() {
-                return future.get();
+                return shared_future.get();
             }
         };
 
@@ -768,34 +772,39 @@ namespace Mercury {
 
         template<>
         struct CoWaitable<void> {
-            std::future<void> future;
+            std::shared_future<void> shared_future;
             ThreadPool* pool{ nullptr };
 
+            explicit CoWaitable(std::future<void>&& fut, ThreadPool* p)
+                : shared_future(fut.share()), pool(p) {
+            }
+
             bool await_ready() const noexcept {
-                return future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+                return shared_future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
             }
 
             void await_suspend(std::coroutine_handle<> handle) noexcept {
                 if (!pool) { std::terminate(); }
 
-                auto shared = std::make_shared<std::shared_future<void>>(future.share());
-                pool->enqueue(Mercury::Priority::Urgent, [shared, handle]() mutable {
+                auto local_shared = shared_future;
+                pool->enqueue(Mercury::Priority::Urgent, [local_shared, handle]() mutable {
                     try {
-                        shared->wait();
+                        local_shared.wait();  // ← через .
                         handle.resume();
                     }
                     catch (...) {
                         Mercury::ExceptionLogger::logException(
                             std::current_exception(),
                             std::source_location::current(),
-                            "CoAwaitable worker"
+                            "CoAwaitable<void> worker"
                         );
                     }
                     });
             }
 
-
-            void await_resume() { future.get(); }
+            void await_resume() {
+                shared_future.get();
+            }
         };
 
         inline CoWaitable<void> awaitable(std::future<void>&& future, ThreadPool& pool) {
