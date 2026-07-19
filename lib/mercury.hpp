@@ -668,8 +668,9 @@ namespace Mercury {
                     for (auto& [prio, slot, weak_conn] : active) {
                         auto conn = weak_conn.lock();
                         if (!conn || conn->isDisconnected()) continue;
-                        m_pool->get().enqueue(prio, [slot, shared_args] {
-                            std::apply(slot, *shared_args);
+                        SlotType slot_copy = slot;
+                        m_pool->get().enqueue(prio, [slot_copy, shared_args] {
+                            std::apply(slot_copy, *shared_args);
                             });
                     }
                 }

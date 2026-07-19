@@ -50,6 +50,14 @@ jobs:
       if: runner.os == 'Windows' && matrix.compiler == 'clang'
       run: choco install llvm -y
 
+    - name: Install GCC 12 (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y g++-12
+        echo "CC=gcc-12" >> $GITHUB_ENV
+        echo "CXX=g++-12" >> $GITHUB_ENV
+
     - name: Configure CMake (Linux)
       if: runner.os == 'Linux'
       run: |
@@ -62,8 +70,8 @@ jobs:
         cmake -B build -DMERCURY_BUILD_TESTS=ON \
               -DCMAKE_CXX_FLAGS="$SANITIZER_FLAGS" \
               -DCMAKE_BUILD_TYPE=Debug \
-              -DCMAKE_C_COMPILER=${{ matrix.compiler == 'clang' && 'clang' || 'gcc' }} \
-              -DCMAKE_CXX_COMPILER=${{ matrix.compiler == 'clang' && 'clang++' || 'g++' }}
+              -DCMAKE_C_COMPILER=$CC \
+              -DCMAKE_CXX_COMPILER=$CXX
 
     - name: Configure CMake (Windows)
       if: runner.os == 'Windows'
